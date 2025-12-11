@@ -22,6 +22,7 @@ void terminate(int sig) {
 int main() {
 	int server;
 	int target;
+	int targetfd;
 	int dummyfd;
 	struct message req;
 	ssize_t n;
@@ -31,6 +32,7 @@ int main() {
 	server = open("serverFIFO",O_RDONLY);
 	if (server < 0) {
 		fprintf(stderr, "server: cannot open serverFIFO for reading: %s\n", strerror(errno));
+	}
 	dummyfd = open("serverFIFO",O_WRONLY);
 
 	while (1) {
@@ -56,7 +58,7 @@ int main() {
 		// close target FIFO after writing the message
 		targetfd = open(req.target, O_WRONLY);
 		if (targetfd < 0) {
-			fprintf(stderr, "server: failed to open target FIFO %s: %s\n", req.target, strerror(errno))
+			fprintf(stderr, "server: failed to open target FIFO %s: %s\n", req.target, strerror(errno));
 			continue;
 		}
 		if (write(targetfd, &req, sizeof(req)) != sizeof(req)) {
