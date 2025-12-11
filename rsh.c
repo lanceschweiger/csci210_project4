@@ -12,7 +12,7 @@
 #define N 13
 
 extern char **environ;
-char uName[20];
+char uName[256];
 
 char *allowed[N] = {"cp","touch","mkdir","ls","pwd","cat","grep","chmod","diff","cd","exit","help","sendmsg"};
 
@@ -65,203 +65,202 @@ void* messageListener(void *arg) {
 	struct message inc;
 	ssize_t n;
 
-	fd = open(uName, O_RDONLY | O_NONBLOCK);
-	if (fd < 0) {
-		fprintf(stderr, "messageListener: cannot open FIFO %s: %s\n", uName, strerror(errno));
-		pthread_exit((void*)0);
-	}
-
 	while (1) {
-		n = read(fd, &inc, sizeof(inc));
-		if (n == sizeof(inc)) {
-			printf("\nIncoming message from %s: %s\n", inc.source, inc.msg);
-			fflush(stdout);
-		} else if (n == -1) {
-			if (errno == EAGAIN || errno == EWOULDBLOCK) {
-				usleep(200000);
-				continue;
-			} else {
-				fprintf(stderr, "messageListener: read error: %s\n", strerror(errno));
-				usleep(200000);
-				continue;
-			}
-		} else if (n == 0) {
-			usleep(200000);
-			continue;
-		} else {
-			usleep(200000);
-			continue;
-		}
-	}
+        fd = open(uName, O_RDONLY);
+        if (fd < 0) {
+            if (errno == ENOENT) {
+                usleep(200000);
+                continue;
+            } else {
+                fprintf(stderr, "messageListener: cannot open FIFO %s: %s\n", uName, strerror(errno));
+                usleep(200000);
+                continue;
+            }
+        }
 
-	close(fd);
-	pthread_exit((void*)0);
+        while (1) {
+            n = read(fd, &inc, sizeof(inc));
+            if (n == sizeof(inc)) {
+                printf("\nIncoming message from %s: %s\n", inc.source, inc.msg);
+                fflush(stdout);
+            } else if (n == 0) {
+                close(fd);
+                fd = -1;
+                break;
+            } else if (n == -1) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    usleep(200000);
+                    continue;
+                } else {
+                    fprintf(stderr, "messageListener: read error: %s\n", strerror(errno));
+                    usleep(200000);
+                    continue;
+                }
+            } else {
+                usleep(200000);
+                continue;
+            }
+        }
+    }
+
+    if (fd >= 0) close(fd);
+    pthread_exit((void*)0);
 }
 
 int isAllowed(const char*cmd) {
-	int i;
-	for (i=0;i<N;i++) {
-		if (strcmp(cmd,allowed[i])==0) {
-			return 1;
-		}
-	}
-	return 0;
+    int i;
+    for (i=0;i<N;i++) {
+        if (strcmp(cmd,allowed[i])==0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 int main(int argc, char **argv) {
     pid_t pid;
-    char **cargv; 
+    char **cargv;
     char *path;
-    char line[256];
+    char line[512];
     int status;
     posix_spawnattr_t attr;
+    pthread_t listenerTid;
 
     if (argc!=2) {
-	printf("Usage: ./rsh <username>\n");
-	exit(1);
+        printf("Usage: ./rsh <username>\n");
+        exit(1);
     }
     signal(SIGINT,terminate);
 
-    strcpy(uName,argv[1]);
+    strncpy(uName, argv[1], sizeof(uName)-1);
+    uName[sizeof(uName)-1] = '\0';
 
-    // TODO:
-    // create the message listener thread
+    if (mkfifo(uName, 0666) < 0) {
+        if (errno != EEXIST) {
+            fprintf(stderr, "rsh: mkfifo %s failed: %s\n", uName, strerror(errno));
+            exit(1);
+        }
+    }
 
-	if (pthread_create(&listenerTid, NULL, messageListener, NULL) != 0) {
-		fprintf(stderr, "Failed to create message listener thread\n");
-		exit(1);
-	}
-	pthread_detach(listenerTid);
+    if (pthread_create(&listenerTid, NULL, messageListener, NULL) != 0) {
+        fprintf(stderr, "Failed to create message listener thread\n");
+        exit(1);
+    }
+    pthread_detach(listenerTid);
 
     while (1) {
+        fprintf(stderr,"rsh>");
+        if (fgets(line, sizeof(line), stdin)==NULL) {
+            continue;
+        }
+        if (strcmp(line,"\n")==0) continue;
+        line[strcspn(line, "\n")] = '\0';
 
-	fprintf(stderr,"rsh>");
+        char cmd[256];
+        char line2[512];
+        strncpy(line2, line, sizeof(line2)-1);
+        line2[sizeof(line2)-1] = '\0';
 
-	if (fgets(line,256,stdin)==NULL) continue;
+        char *token = strtok(line2, " ");
+        if (token == NULL) continue;
+        strncpy(cmd, token, sizeof(cmd)-1);
+        cmd[sizeof(cmd)-1] = '\0';
 
-	if (strcmp(line,"\n")==0) continue;
+        if (!isAllowed(cmd)) {
+            printf("NOT ALLOWED!\n");
+            continue;
+        }
 
-	line[strlen(line)-1]='\0';
+        if (strcmp(cmd,"sendmsg")==0) {
+            char *p = line + strlen("sendmsg");
+            while (*p == ' ') p++;
+            if (*p == '\0') {
+                printf("sendmsg: you have to specify target user\n");
+                continue;
+            }
+            char *target = p;
+            char *sp = strchr(target, ' ');
+            if (sp == NULL) {
+                printf("sendmsg: you have to enter a message\n");
+                continue;
+            }
+            *sp = '\0';
+            char *message = sp + 1;
+            if (message == NULL || *message == '\0') {
+                printf("sendmsg: you have to enter a message\n");
+                continue;
+            }
+            sendmsg(uName, target, message);
+            continue;
+        }
 
-	char cmd[256];
-	char line2[256];
-	strcpy(line2,line);
-	strcpy(cmd,strtok(line," "));
+        if (strcmp(cmd,"exit")==0) break;
 
-	if (!isAllowed(cmd)) {
-		printf("NOT ALLOWED!\n");
-		continue;
-	}
+        if (strcmp(cmd,"cd")==0) {
+            char *targetDir = strtok(NULL," ");
+            if (targetDir == NULL) {
+                char *home = getenv("HOME");
+                if (home) chdir(home);
+            } else {
+                if (strtok(NULL," ")!=NULL) {
+                    printf("-rsh: cd: too many arguments\n");
+                } else {
+                    if (chdir(targetDir) != 0) {
+                        perror("cd");
+                    }
+                }
+            }
+            continue;
+        }
 
-	if (strcmp(cmd,"sendmsg")==0) {
-		// TODO: Create the target user and
-		// the message string and call the sendmsg function
+        if (strcmp(cmd,"help")==0) {
+            printf("The allowed commands are:\n");
+            for (int i=0;i<N;i++) {
+                printf("%d: %s\n",i+1,allowed[i]);
+            }
+            continue;
+        }
 
-		// NOTE: The message itself can contain spaces
-		// If the user types: "sendmsg user1 hello there"
-		// target should be "user1" 
-		// and the message should be "hello there"
+        char working[512];
+        strncpy(working, line, sizeof(working)-1);
+        working[sizeof(working)-1] = '\0';
 
-		// if no argument is specified, you should print the following
-		// printf("sendmsg: you have to specify target user\n");
-		// if no message is specified, you should print the followingA
- 		// printf("sendmsg: you have to enter a message\n");
+        char *saveptr = NULL;
+        char *t = strtok_r(working, " ", &saveptr);
+        int n = 0;
+        cargv = NULL;
+        while (t != NULL) {
+            cargv = (char**)realloc(cargv, sizeof(char*) * (n+1));
+            cargv[n] = strdup(t);
+            n++;
+            t = strtok_r(NULL, " ", &saveptr);
+        }
+        cargv = (char**)realloc(cargv, sizeof(char*) * (n+1));
+        cargv[n] = NULL;
 
-		char *p = line2;
-		char *firstSpace = strchr(p, ' ');
-		char *target = NULL;
-		char *message = NULL;
-		if (firstSpace == NULL) {
-			printf("sendmsg: you have to specify target user\n");
-			continue;
-		}
+        path = strdup(cargv[0]);
 
-		p = firstSpace + 1;
+        posix_spawnattr_init(&attr);
 
-		char *secondSpace = strchr(p, ' ');
-		if (secondSpace == NULL) {
-			target = p;
-			if (strlen(target) == 0) {
-				printf("sendmsg: you have to specify target user\n");
-				continue;
-			}
-			printf("sendmsg: you have to enter a message\n");
-			continue;
-		} else {
-			*secondSpace = '\0';
-			target = p;
-			message = secondSpace + 1;
-			if (strlen(target) == 0) {
-				printf("sendmsg: you have to specify target user\n");
-				continue;
-			}
-			if (message == NULL || strlen(message) == 0) {
-				printf("sendmsg: you have to enter a message\n");
-				continue;
-			}
-			sendmsg(uName, target, message);
-		}
-		continue;
-	}
+        if (posix_spawnp(&pid, path, NULL, &attr, cargv, environ) != 0) {
+            perror("spawn failed");
+            for (int i=0;i<n;i++) free(cargv[i]);
+            free(cargv);
+            free(path);
+            posix_spawnattr_destroy(&attr);
+            continue;
+        }
 
-	if (strcmp(cmd,"exit")==0) break;
+        if (waitpid(pid, &status, 0) == -1) {
+            perror("waitpid failed");
+        }
 
-	if (strcmp(cmd,"cd")==0) {
-		char *targetDir=strtok(NULL," ");
-		if (strtok(NULL," ")!=NULL) {
-			printf("-rsh: cd: too many arguments\n");
-		}
-		else {
-			chdir(targetDir);
-		}
-		continue;
-	}
+        posix_spawnattr_destroy(&attr);
 
-	if (strcmp(cmd,"help")==0) {
-		printf("The allowed commands are:\n");
-		for (int i=0;i<N;i++) {
-			printf("%d: %s\n",i+1,allowed[i]);
-		}
-		continue;
-	}
-
-	cargv = (char**)malloc(sizeof(char*));
-	cargv[0] = (char *)malloc(strlen(cmd)+1);
-	path = (char *)malloc(9+strlen(cmd)+1);
-	strcpy(path,cmd);
-	strcpy(cargv[0],cmd);
-
-	char *attrToken = strtok(line2," "); /* skip cargv[0] which is completed already */
-	attrToken = strtok(NULL, " ");
-	int n = 1;
-	while (attrToken!=NULL) {
-		n++;
-		cargv = (char**)realloc(cargv,sizeof(char*)*n);
-		cargv[n-1] = (char *)malloc(strlen(attrToken)+1);
-		strcpy(cargv[n-1],attrToken);
-		attrToken = strtok(NULL, " ");
-	}
-	cargv = (char**)realloc(cargv,sizeof(char*)*(n+1));
-	cargv[n] = NULL;
-
-	// Initialize spawn attributes
-	posix_spawnattr_init(&attr);
-
-	// Spawn a new process
-	if (posix_spawnp(&pid, path, NULL, &attr, cargv, environ) != 0) {
-		perror("spawn failed");
-		exit(EXIT_FAILURE);
-	}
-
-	// Wait for the spawned process to terminate
-	if (waitpid(pid, &status, 0) == -1) {
-		perror("waitpid failed");
-		exit(EXIT_FAILURE);
-	}
-
-	// Destroy spawn attributes
-	posix_spawnattr_destroy(&attr);
-
+        for (int i=0;i<n;i++) free(cargv[i]);
+        free(cargv);
+        free(path);
     }
+
     return 0;
 }
