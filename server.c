@@ -54,11 +54,15 @@ int main() {
             fflush(stdout);
 
             targetfd = open(req.target, O_WRONLY | O_NONBLOCK);
-            if (targetfd < 0) {
-                fprintf(stderr, "server: failed to open target FIFO %s: %s\n",
-                        req.target, strerror(errno));
-                continue;
-            }
+			if (targetfd < 0) {
+    			if (errno == ENXIO) {
+        			continue;
+    			} else {
+        			fprintf(stderr, "server: failed to open target FIFO %s: %s\n",
+                	req.target, strerror(errno));
+        			continue;
+    			}
+			}
 
             if (write(targetfd, &req, sizeof(req)) != sizeof(req)) {
                 fprintf(stderr, "server: write to %s failed: %s\n",
